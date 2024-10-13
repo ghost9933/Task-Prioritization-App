@@ -251,6 +251,7 @@ def show_main_content():
     integrate_canvas = st.checkbox("Canvas")
 
     if integrate_canvas:
+        st.markdown("[Need help with Canvas integration? Click here!](https://community.canvaslms.com/t5/Canvas-Basics-Guide/How-do-I-manage-API-access-tokens-in-my-user-account/ta-p/615312)", unsafe_allow_html=True)
         canvas_token = st.text_input("Enter Canvas API Access Token", type="password")
 
     if st.button("Integrate"):
