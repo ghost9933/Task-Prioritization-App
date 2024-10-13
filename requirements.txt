@@ -1,0 +1,5 @@
+streamlit
+ics
+pymongo
+requests
+scikit-learn
