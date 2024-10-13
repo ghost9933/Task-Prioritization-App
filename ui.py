@@ -4,9 +4,30 @@ import requests
 import json
 import http.client
 from ics import Calendar
+import base64
+from pathlib import Path
+from pymongo import MongoClient
+import hashlib
+from urllib.parse import quote_plus  # To escape username and password
+
+# MongoDB Atlas connection details
+MONGO_USERNAME = quote_plus("taskpriority123")  # Replace with your MongoDB username
+MONGO_PASSWORD = quote_plus("SNL@12345678")  # Replace with your MongoDB password
+MONGO_CLUSTER_URL = "taskprio.wjrwb.mongodb.net"  # Replace with your MongoDB cluster URL
+MONGO_URI = f"mongodb+srv://{MONGO_USERNAME}:{MONGO_PASSWORD}@{MONGO_CLUSTER_URL}/test?retryWrites=true&w=majority"
+DB_NAME = "TaskPrio"  # Your database name
+COLLECTION_NAME = "users"  # Collection to store users' credentials
+
+# Connect to MongoDB
+client = MongoClient(MONGO_URI)
+db = client[DB_NAME]
+users_collection = db[COLLECTION_NAME]
+
+# Function to hash passwords before storing in the database
+# def hash_password(password):
+#     return hashlib.sha256(password.encode()).hexdigest()
 
 
-# CanvasAPI class for handling API requests
 class CanvasAPI:
     BASE_URL = "https://uta.instructure.com/api/v1"
 
@@ -50,39 +71,108 @@ class CanvasAPI:
                 print(f"Failed to fetch calendar from {url}: {response.status_code}")
 
         return events
+# Function to set the background image
+def set_bg_hack(main_bg):
+    main_bg_ext = "jpg"
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background: url(data:image/{main_bg_ext};base64,{main_bg}) no-repeat center center fixed;
+            background-size: cover;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
+# Load and encode the image file
+main_bg = Path("calendar.jpg").read_bytes()
+encoded_main_bg = base64.b64encode(main_bg).decode()
 
-# Dummy credentials for users (simulating a database with a dictionary)
-USER_CREDENTIALS = {'admin': 'password123'}
+# Set the background image
+set_bg_hack(encoded_main_bg)
 
-# Function to validate user login
+# Apply custom styles
+st.markdown(
+    """
+    <style>
+    html, body, [class*="stText"], [class*="stMarkdown"], .stButton > button, .stTitle, .stSubheader, .stTextInput > label, .stCheckbox > div:first-child, h1, h2, h3, h4, h5, h6 {
+        color: black !important;
+        font-family: 'Arial', sans-serif !important;
+    }
+    input {
+        background-color: rgba(255, 255, 255, 0.8) !important;
+        color: black !important;
+        font-size: 18px !important;
+        padding: 10px !important;
+        border: none !important;
+        border-radius: 8px !important;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
+    }
+    button {
+        background-color: transparent !important;
+        color: white !important;
+        font-size: 18px !important;
+        padding: 10px 20px !important;
+        border: 2px solid white !important;
+        border-radius: 8px !important;
+    }
+    button:hover {
+        background-color: rgba(255, 255, 255, 0.1) !important;
+    }
+    .stCheckbox > div:first-child {
+        color: black !important;
+        font-size: 20px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Function to validate user login using MongoDB
+# Debugging login function
 def login(username, password):
-    return USER_CREDENTIALS.get(username) == password
+    hashed_password = password
 
-# Function to register a new user (simulated by adding to a list for now)
+    # Debugging: Check what's being passed to the query
+    print(f"Username: {username}")
+    print(f"Hashed Password: {hashed_password}")
+
+    user = users_collection.find_one({"username": username, "password": hashed_password})
+
+    # Debugging: Check if the user was found
+    print(f"User found: {user}")
+
+    return user is not None
+
+# Function to register a new user using MongoDB
 def register_user(username, password):
-    if username in USER_CREDENTIALS:
+    if users_collection.find_one({"username": username}):
+        print("User already exists")  # Debugging: Check if the user already exists
         return False  # User already exists
-    USER_CREDENTIALS[username] = password  # Add to the simulated DB
+
+    hashed_password = password
+
+    # Debugging: Check what's being inserted
+    print(f"Registering user with username: {username}, password: {hashed_password}")
+
+    users_collection.insert_one({"username": username, "password": hashed_password})
     return True
 
 # Session state to keep track of login status
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
-# Session state to track if the user is registering
 if 'is_registering' not in st.session_state:
     st.session_state['is_registering'] = False
 
-# Session state to track if the user has completed integration
 if 'integration_complete' not in st.session_state:
     st.session_state['integration_complete'] = False
 
-# Session state to track if integration is in progress
 if 'integration_in_progress' not in st.session_state:
     st.session_state['integration_in_progress'] = False
 
-# Session state to store view preference (list or calendar)
 if 'view_option' not in st.session_state:
     st.session_state['view_option'] = 'List View'
 
@@ -117,8 +207,8 @@ def fetch_canvas_calendar(api_token):
 # Register page
 def show_register_page():
     st.title("🔐 Register a New Account")
-    new_username = st.text_input("Choose a Username")
-    new_password = st.text_input("Choose a Password", type="password")
+    new_username = st.text_input("Choose a Username", placeholder="Enter your username")
+    new_password = st.text_input("Choose a Password", type="password", placeholder="Enter your password")
     register_btn = st.button("Register")
 
     if register_btn:
@@ -129,12 +219,14 @@ def show_register_page():
                 st.success("User registered successfully! Redirecting to login...")
                 st.session_state['is_registering'] = False
                 st.rerun()  # Re-run the app to return to the login page
+            else:
+                st.error("Username already exists. Please choose a different username.")
 
 # Login page
 def show_login_page():
-    st.title("🔐 Login to Access the Calendar App")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    st.title("🔐 Login to PrioritizeMe")
+    username = st.text_input("Username", placeholder="Enter your username")
+    password = st.text_input("Password", type="password", placeholder="Enter your password")
 
     login_btn = st.button("Login")
     register_btn = st.button("Register")
@@ -153,20 +245,14 @@ def show_login_page():
 
 # Main App Content
 def show_main_content():
-    st.title('🎯 Task Prioritization App')
-
+    st.title('🎯 PrioritizeMe AI')
     st.subheader('📅 Integrate Your Calendar')
 
     integrate_canvas = st.checkbox("Canvas")
-    integrate_google = st.checkbox("Google Calendar")
 
     if integrate_canvas:
         canvas_token = st.text_input("Enter Canvas API Access Token", type="password")
 
-    if integrate_google:
-        st.write("Google Calendar Sign-In (Coming Soon)")
-
-    # Integration logic
     if st.button("Integrate"):
         if integrate_canvas:
             if canvas_token:
