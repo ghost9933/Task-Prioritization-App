@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, date
 import requests
 import json
 import http.client
@@ -8,12 +8,15 @@ import base64
 from pathlib import Path
 from pymongo import MongoClient
 import hashlib
-from urllib.parse import quote_plus  # To escape username and password
 import os
+from urllib.parse import quote_plus  # To escape username and password
 from dotenv import load_dotenv
+import google.generativeai as genai
 
-# Load environment variables from .env file
-load_dotenv()
+# ----------------------------
+# Load Environment Variables
+# ----------------------------
+load_dotenv()  # Load variables from .env
 
 # Retrieve environment variables
 YOUR_DB_NAME = os.getenv("YOUR_DB_NAME")
@@ -23,7 +26,14 @@ YOUR_MONGODB_HOST = os.getenv("YOUR_MONGODB_HOST")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_SECRET = os.getenv("GEMINI_API_SECRET")
 
-# MongoDB Atlas connection details
+# ----------------------------
+# Configure Gemini API
+# ----------------------------
+genai.configure(api_key=GEMINI_API_KEY)
+
+# ----------------------------
+# MongoDB Atlas Connection
+# ----------------------------
 MONGO_USERNAME = quote_plus(YOUR_USERNAME)  # MongoDB username
 MONGO_PASSWORD = quote_plus(YOUR_PASSWORD)  # MongoDB password
 MONGO_CLUSTER_URL = YOUR_MONGODB_HOST  # MongoDB cluster URL
@@ -36,8 +46,12 @@ client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 users_collection = db[COLLECTION_NAME]
 
-# Function to hash passwords before storing in the database
+# ----------------------------
+# Helper Functions
+# ----------------------------
+
 def hash_password(password):
+    """Hash a password for storing."""
     return hashlib.sha256(password.encode()).hexdigest()
 
 class CanvasAPI:
@@ -52,9 +66,10 @@ class CanvasAPI:
     @classmethod
     def get_courses(cls, api_token):
         conn = http.client.HTTPSConnection("uta.instructure.com")
-        conn.request("GET", "/api/v1/courses", '', cls.get_headers(api_token))
+        conn.request("GET", "/api/v1/courses", headers=cls.get_headers(api_token))
         res = conn.getresponse()
         data = res.read().decode("utf-8")
+        conn.close()
         return data  # Return raw JSON string
 
     @classmethod
@@ -66,7 +81,7 @@ class CanvasAPI:
 
         # Parse the JSON data
         courses = json.loads(courses_data)
-        calendar_urls = [course['calendar']['ics'] for course in courses if 'calendar' in course]
+        calendar_urls = [course['calendar']['ics'] for course in courses if 'calendar' in course and 'ics' in course['calendar']]
         return calendar_urls
 
     @classmethod
@@ -80,7 +95,7 @@ class CanvasAPI:
                 calendar = Calendar(response.text)
                 events.extend(calendar.events)  # Collect events from each calendar
             else:
-                print(f"Failed to fetch calendar from {url}: {response.status_code}")
+                st.error(f"Failed to fetch calendar from {url}: {response.status_code}")
 
         return events
 
@@ -90,7 +105,6 @@ class GeminiAPI:
     def __init__(self, api_key, api_secret):
         self.api_key = api_key
         self.api_secret = api_secret
-        # Add any additional initialization if required
 
     def get_headers(self):
         return {
@@ -113,8 +127,8 @@ class GeminiAPI:
 # Initialize GeminiAPI
 gemini = GeminiAPI(api_key=GEMINI_API_KEY, api_secret=GEMINI_API_SECRET)
 
-# Function to set the background image
 def set_bg_hack(main_bg):
+    """Set background image for Streamlit app."""
     main_bg_ext = "jpg"
     st.markdown(
         f"""
@@ -128,67 +142,60 @@ def set_bg_hack(main_bg):
         unsafe_allow_html=True
     )
 
-# Load and encode the image file
-try:
-    main_bg = Path("calendar.jpg").read_bytes()
-    encoded_main_bg = base64.b64encode(main_bg).decode()
-    # Set the background image
-    set_bg_hack(encoded_main_bg)
-except FileNotFoundError:
-    st.warning("Background image 'calendar.jpg' not found. Please ensure it exists in the project directory.")
+def extract_events_from_content(content):
+    """Extract events from ICS content."""
+    gcal = Calendar(content)
+    events = []
+    for component in gcal.walk():
+        if component.name == "VEVENT":
+            events.append({
+                'uid': str(component.get('UID')),
+                'summary': str(component.get('SUMMARY')),
+                'start': component.get('DTSTART').dt,
+                'description': str(component.get('DESCRIPTION')),
+                'url': str(component.get('URL')) if component.get('URL') else None,
+            })
+    return events
 
-# Apply custom styles
-st.markdown(
-    """
-    <style>
-    html, body, [class*="stText"], [class*="stMarkdown"], .stButton > button, .stTitle, .stSubheader, .stTextInput > label, .stCheckbox > div:first-child, h1, h2, h3, h4, h5, h6 {
-        color: black !important;
-        font-family: 'Arial', sans-serif !important;
+def serialize_event(event):
+    """Serialize event for JSON compatibility."""
+    return {
+        'uid': event.get('uid'),
+        'summary': event.get('summary'),
+        'start': event['start'].isoformat() if isinstance(event['start'], (datetime, date)) else event['start'],
+        'description': event.get('description'),
+        'url': event.get('url')
     }
-    input {
-        background-color: rgba(255, 255, 255, 0.8) !important;
-        color: black !important;
-        font-size: 18px !important;
-        padding: 10px !important;
-        border: none !important;
-        border-radius: 8px !important;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
-    }
-    button {
-        background-color: transparent !important;
-        color: white !important;
-        font-size: 18px !important;
-        padding: 10px 20px !important;
-        border: 2px solid white !important;
-        border-radius: 8px !important;
-    }
-    button:hover {
-        background-color: rgba(255, 255, 255, 0.1) !important;
-    }
-    .stCheckbox > div:first-child {
-        color: black !important;
-        font-size: 20px !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 
-# Function to validate user login using MongoDB
+def generate_content_with_gemini(prompt):
+    """Generate content using Gemini API."""
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    response = model.generate_content(prompt)
+    return response.text
+
+# ----------------------------
+# User Authentication Functions
+# ----------------------------
+
 def login(username, password):
+    """Validate user login using MongoDB."""
     hashed_password = hash_password(password)
     user = users_collection.find_one({"username": username, "password": hashed_password})
     return user is not None
 
-# Function to register a new user using MongoDB
 def register_user(username, password):
+    """Register a new user using MongoDB."""
     if users_collection.find_one({"username": username}):
         return False  # User already exists
     hashed_password = hash_password(password)
     users_collection.insert_one({"username": username, "password": hashed_password})
     return True
 
-# Session state to keep track of login status
+# ----------------------------
+# Streamlit UI Components
+# ----------------------------
+
+# Initialize Session State
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
@@ -207,6 +214,7 @@ if 'view_option' not in st.session_state:
 # Function to log out
 def logout():
     st.session_state['logged_in'] = False
+    st.session_state['is_registering'] = False
     st.session_state['integration_complete'] = False
     st.session_state['integration_in_progress'] = False
     st.session_state['canvas_events'] = []  # Clear Canvas events
@@ -405,13 +413,13 @@ def show_main_content():
     if integrate_canvas:
         canvas_token = st.text_input("Enter Canvas API Access Token", type="password")
 
-    # Gemini Integration
+    # Gemini Integration - Schedule Helper
     if integrate_gemini:
         with st.form("gemini_task_form"):
             st.write("### Create a Gemini Task")
             task_title = st.text_input("Task Title", placeholder="Enter task title")
             task_description = st.text_area("Task Description", placeholder="Enter task description")
-            task_due_date = st.date_input("Due Date", min_value=datetime.today())
+            task_due_date = st.date_input("Due Date", min_value=date.today())
             submitted = st.form_submit_button("Create Gemini Task")
 
             if submitted:
