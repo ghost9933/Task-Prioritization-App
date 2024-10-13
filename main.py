@@ -1,9 +1,9 @@
 import streamlit as st
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import requests
 import json
 import http.client
-from ics import Calendar, Event
+from ics import Calendar
 import base64
 from pathlib import Path
 from pymongo import MongoClient
@@ -167,103 +167,11 @@ def serialize_event(event):
         'url': event.get('url')
     }
 
-def generate_schedule_prompt(tasks):
-    """Generate a structured prompt for Gemini API based on tasks."""
-    prompt = (
-        "I have a list of tasks with their descriptions and due dates. Please generate a detailed weekly schedule that organizes these tasks efficiently. "
-        "For each week, list the tasks, their priorities, and any dependencies. Highlight tasks that are due within the week and suggest optimal times for completion based on their descriptions.\n\n"
-        "Here are my tasks:\n"
-    )
-    
-    for idx, task in enumerate(tasks, 1):
-        prompt += f"\n{idx}. **{task['summary']}**\n"
-        prompt += f"   - **Description:** {task['description']}\n"
-        prompt += f"   - **Due Date:** {task['start']}\n"
-    
-    prompt += "\nPlease provide the schedule in a clear, week-by-week format."
-    return prompt
-
-def generate_schedule_with_gemini(tasks):
-    """Generate a weekly schedule report using Gemini API."""
-    prompt = generate_schedule_prompt(tasks)
-    
-    try:
-        response = gemini.create_schedule({"prompt": prompt})
-        return response
-    except requests.exceptions.RequestException as e:
-        st.error(f"An error occurred while generating the schedule: {e}")
-        return None
-
-def parse_schedule_report(report):
-    """
-    Parse the schedule report from Gemini and extract events.
-    Assumes the report is in a consistent, parseable format.
-    Example Format:
-    Week 1:
-    1. **Task Title**
-       - **Description:** Task Description
-       - **Due Date:** September 20, 2024
-    """
-    events = []
-    lines = report.split('\n')
-    current_week = None
-    idx = 0
-    while idx < len(lines):
-        line = lines[idx].strip()
-        if line.startswith("Week"):
-            current_week = line
-            idx += 1
-            continue
-        elif line.startswith('**') and current_week:
-            # Extract task details
-            title = line.strip().strip('**')
-            # Ensure the next two lines exist
-            if idx + 2 < len(lines):
-                desc_line = lines[idx + 1].strip()
-                due_line = lines[idx + 2].strip()
-                
-                # Extract description
-                if desc_line.startswith('- **Description:**'):
-                    description = desc_line.split('- **Description:**')[1].strip()
-                else:
-                    description = "No description provided."
-                
-                # Extract due date
-                if due_line.startswith('- **Due Date:**'):
-                    due_date_str = due_line.split('- **Due Date:**')[1].strip()
-                    try:
-                        due_date = datetime.strptime(due_date_str, "%B %d, %Y")
-                    except ValueError:
-                        due_date = datetime.today()
-                else:
-                    due_date = datetime.today()
-                
-                # Create an event
-                event = Event()
-                event.name = title
-                event.begin = due_date
-                event.description = description
-                event.make_all_day()
-                events.append(event)
-                
-                idx += 3
-                continue
-        idx += 1
-    return events
-
-def create_ics_file(events):
-    """Create an ICS file from a list of ICS Event objects."""
-    cal = Calendar()
-    for event in events:
-        cal.events.add(event)
-    return cal
-
-def get_download_link(cal):
-    """Generate a download link for the ICS file."""
-    c = cal.serialize()
-    b64 = base64.b64encode(c.encode()).decode()
-    href = f'<a href="data:text/calendar;base64,{b64}" download="schedule.ics">Download ICS File</a>'
-    return href
+def generate_content_with_gemini(prompt):
+    """Generate content using Gemini API."""
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    response = model.generate_content(prompt)
+    return response.text
 
 # ----------------------------
 # User Authentication Functions
@@ -311,9 +219,7 @@ def logout():
     st.session_state['integration_in_progress'] = False
     st.session_state['canvas_events'] = []  # Clear Canvas events
     st.session_state['gemini_tasks'] = []  # Clear Gemini tasks
-    st.session_state['schedule_report'] = ""  # Clear schedule report
-    st.session_state['gemini_events'] = []  # Clear Gemini events
-    st.session_state['ics_file'] = None  # Clear ICS file
+    st.session_state['gemini_response'] = None  # Clear Gemini response
     st.success("You have been logged out.")
 
 # Function to fetch Canvas calendar events using CanvasAPI class
@@ -323,10 +229,8 @@ def fetch_canvas_calendar(api_token):
         events = CanvasAPI.get_calendar_events(api_token)
 
         if events:
-            # Serialize Canvas events for consistency
-            serialized_events = [serialize_event(event) for event in events]
             st.session_state['integration_complete'] = True
-            st.session_state['canvas_events'] = serialized_events
+            st.session_state['canvas_events'] = events
             st.success("Canvas calendar integration successful! 🎉")
         else:
             st.warning("No calendar events found for the courses.")
@@ -335,22 +239,14 @@ def fetch_canvas_calendar(api_token):
     finally:
         st.session_state['integration_in_progress'] = False
 
-# Function to create Gemini Task and generate schedule
-def create_gemini_task(tasks):
-    """Create a schedule using Gemini API."""
-    response = generate_schedule_with_gemini(tasks)
-    if response:
-        schedule_report = response.get('generated_content')  # Adjust based on actual response
-        st.session_state['schedule_report'] = schedule_report
-        st.success("Weekly schedule generated successfully!")
-        
-        # Parse the schedule report to extract events
-        gemini_events = parse_schedule_report(schedule_report)
-        st.session_state['gemini_events'] = gemini_events
-        
-        # Generate ICS file
-        cal = create_ics_file(gemini_events)
-        st.session_state['ics_file'] = cal
+# Function to create Gemini Task
+def create_gemini_task(task_details):
+    try:
+        response = gemini.create_schedule(task_details)
+        return response
+    except requests.exceptions.RequestException as e:
+        st.error(f"An error occurred while creating the task: {e}")
+        return None
 
 # Register page
 def show_register_page():
@@ -402,18 +298,17 @@ def display_task_list():
         if canvas_tasks:
             st.write("#### Canvas Tasks")
             for event in canvas_tasks:
-                st.write(f"**Event:** {event['summary']}")
-                st.write(f"**Start Date:** {event['start']}")
-                st.write(f"**End Date:** {event['end']}")
-                st.write(f"**Description:** {event['description']}")
+                st.write(f"**Event:** {event.name}")
+                st.write(f"**Start Date:** {event.begin}")
+                st.write(f"**End Date:** {event.end}")
                 st.write("---")
 
         if gemini_tasks:
             st.write("#### Gemini Tasks")
             for task in gemini_tasks:
-                st.write(f"**Title:** {task['summary']}")
-                st.write(f"**Description:** {task['description']}")
-                st.write(f"**Due Date:** {task['start']}")
+                st.write(f"**Title:** {task.get('title')}")
+                st.write(f"**Description:** {task.get('description')}")
+                st.write(f"**Due Date:** {task.get('due_date')}")
                 st.write("---")
     else:
         st.write("No tasks available to display.")
@@ -426,9 +321,9 @@ def display_integrated_calendars():
     canvas_events = st.session_state.get('canvas_events', [])
     for event in canvas_events:
         tasks.append({
-            "title": event['summary'],
-            "start": event['start'],
-            "end": event['end'],
+            "title": event.name,
+            "start": event.begin.isoformat(),
+            "end": event.end.isoformat(),
             "color": "red"  # Canvas events are red
         })
 
@@ -436,20 +331,10 @@ def display_integrated_calendars():
     gemini_tasks = st.session_state.get('gemini_tasks', [])
     for task in gemini_tasks:
         tasks.append({
-            "title": task['summary'],
-            "start": task['start'],  # Assuming start is in ISO format
-            "end": task['start'],    # Single day task
-            "color": "blue"          # Gemini tasks are blue
-        })
-
-    # Add Gemini-generated schedule events
-    gemini_events = st.session_state.get('gemini_events', [])
-    for event in gemini_events:
-        tasks.append({
-            "title": event.name,
-            "start": event.begin.isoformat(),
-            "end": event.end.isoformat(),
-            "color": "green"  # Gemini schedule events are green
+            "title": task.get('title'),
+            "start": task.get('due_date'),  # Assuming due_date is in ISO format
+            "end": task.get('due_date'),
+            "color": "blue"  # Gemini tasks are blue
         })
 
     if tasks:
@@ -490,7 +375,8 @@ def display_integrated_calendars():
                 }},
                 events: {task_events_js},
                 eventDisplay: 'block',
-                editable: false,
+                editable: true,
+                eventResizableFromStart: true,
                 displayEventTime: true,
                 eventTimeFormat: {{
                     hour: '2-digit',
@@ -515,27 +401,7 @@ def display_integrated_calendars():
     else:
         st.write("No tasks available to display on the calendar.")
 
-# Function to display the generated schedule report
-def display_schedule_report():
-    schedule_report = st.session_state.get('schedule_report', "")
-    if schedule_report:
-        st.markdown("### Weekly Schedule Report")
-        st.text(schedule_report)
-        
-        # If schedule report has been parsed into events, offer ICS download
-        gemini_events = st.session_state.get('gemini_events', [])
-        if gemini_events:
-            cal = st.session_state.get('ics_file', None)
-            if cal:
-                download_link = get_download_link(cal)
-                st.markdown(download_link, unsafe_allow_html=True)
-    else:
-        st.write("No schedule report available.")
-
-# ----------------------------
 # Main App Content
-# ----------------------------
-
 def show_main_content():
     st.title('🎯 PrioritizeMe AI')
     st.subheader('📅 Integrate Your Calendar and Gemini Scheduling')
@@ -551,55 +417,33 @@ def show_main_content():
     # Gemini Integration - Schedule Helper
     if integrate_gemini:
         with st.form("gemini_task_form"):
-            st.write("### Add a Gemini Task")
+            st.write("### Create a Gemini Task")
             task_title = st.text_input("Task Title", placeholder="Enter task title")
             task_description = st.text_area("Task Description", placeholder="Enter task description")
             task_due_date = st.date_input("Due Date", min_value=date.today())
-            submitted = st.form_submit_button("Add Task")
+            submitted = st.form_submit_button("Create Gemini Task")
 
             if submitted:
                 if not all([task_title, task_description, task_due_date]):
                     st.error("All task fields are required.")
                 else:
                     task_details = {
-                        "summary": task_title,
+                        "title": task_title,
                         "description": task_description,
-                        "start": task_due_date.isoformat()
+                        "due_date": task_due_date.isoformat()
                     }
-                    # Collect all tasks into a list
-                    if 'gemini_tasks' not in st.session_state:
-                        st.session_state['gemini_tasks'] = []
-                    st.session_state['gemini_tasks'].append(task_details)
-                    st.success(f"Task '{task_title}' added successfully!")
-
-        # Button to Generate Weekly Schedule
-        if st.button("Generate Weekly Schedule"):
-            # Combine Canvas and Gemini tasks
-            all_tasks = []
-            canvas_tasks = st.session_state.get('canvas_events', [])
-            gemini_tasks = st.session_state.get('gemini_tasks', [])
-
-            # Add Canvas tasks to all_tasks
-            for task in canvas_tasks:
-                all_tasks.append({
-                    "summary": task['summary'],
-                    "description": task['description'],
-                    "start": task['start']
-                })
-
-            # Add Gemini tasks to all_tasks
-            for task in gemini_tasks:
-                all_tasks.append({
-                    "summary": task['summary'],
-                    "description": task['description'],
-                    "start": task['start']
-                })
-
-            if all_tasks:
-                create_gemini_task(all_tasks)
-                display_schedule_report()
-            else:
-                st.warning("No tasks available to generate a schedule.")
+                    response = create_gemini_task(task_details)
+                    if response:
+                        # Store the Gemini task in session state
+                        if 'gemini_tasks' not in st.session_state:
+                            st.session_state['gemini_tasks'] = []
+                        st.session_state['gemini_tasks'].append(response)
+                        st.success(f"Task '{response.get('title')}' created successfully!")
+                        # Display the output of the Gemini API response
+                        st.write("#### Gemini Task Created:")
+                        st.write(f"**Title:** {response.get('title')}")
+                        st.write(f"**Description:** {response.get('description')}")
+                        st.write(f"**Due Date:** {response.get('due_date')}")
 
     # Integration Button
     if st.button("Integrate"):
@@ -620,15 +464,6 @@ def show_main_content():
             display_task_list()
         else:
             display_integrated_calendars()
-
-    # Display Schedule Report if available
-    display_schedule_report()
-
-    # If ICS file is generated, provide a download link
-    ics_file = st.session_state.get('ics_file', None)
-    if ics_file:
-        download_link = get_download_link(ics_file)
-        st.markdown(download_link, unsafe_allow_html=True)
 
     st.button("Logout", on_click=logout)
 
