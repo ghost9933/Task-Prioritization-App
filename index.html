@@ -5,26 +5,18 @@
     <title>Task Prioritization App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        img {
-            max-width: 80%;
-            cursor: pointer;
-            display: block;
-            margin: 20px auto;
+        html, body, iframe {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            border: none;
         }
-        body {
-            text-align: center;
-            font-family: Arial, sans-serif;
-        }
-        a {
-            text-decoration: none;
+        iframe {
+            width: 100%;
         }
     </style>
 </head>
 <body>
-    <h1>Task Prioritization App</h1>
-    <p>Click the image below to access the Task Prioritization App:</p>
-    <a href="https://prioritizemeai.streamlit.app/?embed_options=show_toolbar,show_padding,dark_theme,show_footer,light_theme,show_colored_line" target="_blank">
-        <img src="preview-image.png" alt="Task Prioritization App Preview">
-    </a>
+    <iframe src="https://prioritizemeai.streamlit.app/?embed_options=show_toolbar,show_padding,dark_theme,show_footer,light_theme,show_colored_line&embedded=true" title="Task Prioritization App"></iframe>
 </body>
 </html>
