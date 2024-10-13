@@ -1,13 +1,59 @@
 import streamlit as st
-from ics import Calendar
 from datetime import datetime
 import requests
+import json
+import http.client
+from ics import Calendar
+
+
+# CanvasAPI class for handling API requests
+class CanvasAPI:
+    BASE_URL = "https://uta.instructure.com/api/v1"
+
+    @staticmethod
+    def get_headers(api_token):
+        return {
+            'Authorization': f'Bearer {api_token}',
+        }
+
+    @classmethod
+    def get_courses(cls, api_token):
+        conn = http.client.HTTPSConnection("uta.instructure.com")
+        conn.request("GET", "/api/v1/courses", '', cls.get_headers(api_token))
+        res = conn.getresponse()
+        data = res.read().decode("utf-8")
+        return data  # Return raw JSON string
+
+    @classmethod
+    def extract_calendar_urls(cls, api_token):
+        courses_data = cls.get_courses(api_token)
+
+        if not courses_data:
+            return []
+
+        # Parse the JSON data
+        courses = json.loads(courses_data)
+        calendar_urls = [course['calendar']['ics'] for course in courses if 'calendar' in course]
+        return calendar_urls
+
+    @classmethod
+    def get_calendar_events(cls, api_token):
+        calendar_urls = cls.extract_calendar_urls(api_token)
+        events = []
+
+        for url in calendar_urls:
+            response = requests.get(url)
+            if response.status_code == 200:
+                calendar = Calendar(response.text)
+                events.extend(calendar.events)  # Collect events from each calendar
+            else:
+                print(f"Failed to fetch calendar from {url}: {response.status_code}")
+
+        return events
+
 
 # Dummy credentials for users (simulating a database with a dictionary)
 USER_CREDENTIALS = {'admin': 'password123'}
-
-# User registration database (simulating a database with a list)
-USER_DATABASE = []
 
 # Function to validate user login
 def login(username, password):
@@ -18,7 +64,6 @@ def register_user(username, password):
     if username in USER_CREDENTIALS:
         return False  # User already exists
     USER_CREDENTIALS[username] = password  # Add to the simulated DB
-    USER_DATABASE.append({'username': username, 'password': password})
     return True
 
 # Session state to keep track of login status
@@ -29,10 +74,45 @@ if 'logged_in' not in st.session_state:
 if 'is_registering' not in st.session_state:
     st.session_state['is_registering'] = False
 
+# Session state to track if the user has completed integration
+if 'integration_complete' not in st.session_state:
+    st.session_state['integration_complete'] = False
+
+# Session state to track if integration is in progress
+if 'integration_in_progress' not in st.session_state:
+    st.session_state['integration_in_progress'] = False
+
+# Session state to store view preference (list or calendar)
+if 'view_option' not in st.session_state:
+    st.session_state['view_option'] = 'List View'
+
 # Function to log out
 def logout():
     st.session_state['logged_in'] = False
-    st.rerun()  # Rerun the app to refresh the page
+    st.session_state['integration_complete'] = False
+    st.session_state['integration_in_progress'] = False
+    st.session_state['canvas_events'] = []  # Clear events
+    st.write("You have been logged out.")
+
+# Function to fetch Canvas calendar events using CanvasAPI class
+def fetch_canvas_calendar(api_token):
+    try:
+        st.session_state['integration_in_progress'] = True
+
+        events = CanvasAPI.get_calendar_events(api_token)
+
+        if events:
+            st.session_state['integration_complete'] = True
+            st.session_state['canvas_events'] = events
+            st.success("Canvas calendar integration successful! 🎉")
+            st.session_state['integration_in_progress'] = False
+            st.rerun()  # Re-run the app to show the updated content
+        else:
+            st.warning("No calendar events found for the courses.")
+    except Exception as e:
+        st.error(f"Error fetching calendar events: {e}")
+    finally:
+        st.session_state['integration_in_progress'] = False
 
 # Register page
 def show_register_page():
@@ -41,17 +121,14 @@ def show_register_page():
     new_password = st.text_input("Choose a Password", type="password")
     register_btn = st.button("Register")
 
-    # Ensure that both fields are filled out
     if register_btn:
         if not new_username or not new_password:
             st.error("Both username and password are required.")
         else:
             if register_user(new_username, new_password):
                 st.success("User registered successfully! Redirecting to login...")
-                st.session_state['is_registering'] = False  # Switch back to login after successful registration
-                st.rerun()  # Immediately refresh the page and go back to login
-            else:
-                st.error("Username already exists. Please choose a different username.")
+                st.session_state['is_registering'] = False
+                st.rerun()  # Re-run the app to return to the login page
 
 # Login page
 def show_login_page():
@@ -60,175 +137,148 @@ def show_login_page():
     password = st.text_input("Password", type="password")
 
     login_btn = st.button("Login")
-    register_btn = st.button("Register")  # Button to switch to the register page
+    register_btn = st.button("Register")
 
     if login_btn:
         if login(username, password):
             st.session_state['logged_in'] = True
+            st.session_state['username'] = username  # Store username in session
             st.success("Successfully Logged In!")
-            st.rerun()  # Rerun the app to show the main page
+            st.rerun()  # Re-run the app to show the main page
         else:
             st.error("Invalid Username or Password!")
 
     if register_btn:
         st.session_state['is_registering'] = True  # Switch to the register page
-        st.rerun()  # Refresh the page to switch to the registration form
 
-# Main App Content (After login)
+# Main App Content
 def show_main_content():
     st.title('🎯 Task Prioritization App')
-    st.subheader('📅 Upload Your Calendar (.ics) File or Provide a URL')
 
-    # Logout Button
-    if st.button("Logout"):
-        logout()
+    st.subheader('📅 Integrate Your Calendar')
 
-    # File upload section
-    uploaded_file = st.file_uploader("Choose an .ics file", type="ics")
-    ics_url = st.text_input("Or enter the URL of your .ics file")
+    integrate_canvas = st.checkbox("Canvas")
+    integrate_google = st.checkbox("Google Calendar")
 
+    if integrate_canvas:
+        canvas_token = st.text_input("Enter Canvas API Access Token", type="password")
+
+    if integrate_google:
+        st.write("Google Calendar Sign-In (Coming Soon)")
+
+    # Integration logic
+    if st.button("Integrate"):
+        if integrate_canvas:
+            if canvas_token:
+                fetch_canvas_calendar(canvas_token)
+            else:
+                st.error("Canvas API token is required.")
+
+    if st.session_state['integration_complete']:
+        st.session_state['view_option'] = st.radio("Choose a view:", ('List View', 'Calendar View'))
+
+        if st.session_state['view_option'] == 'List View':
+            display_task_list()
+        else:
+            display_integrated_calendars()
+
+    st.button("Logout", on_click=logout)
+
+# Display integrated assignments in List View
+def display_task_list():
+    tasks = st.session_state.get('canvas_events', [])
+
+    if tasks:
+        st.write("### Task List")
+        for event in tasks:
+            st.write(f"**Event:** {event.name}")
+            st.write(f"**Start Date:** {event.begin}")
+            st.write(f"**End Date:** {event.end}")
+            st.write("---")
+    else:
+        st.write("No tasks available to display.")
+
+# Display integrated assignments in Calendar View
+def display_integrated_calendars():
     tasks = []
 
-    def fetch_ics_from_url(url):
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            return response.text
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching .ics file from URL: {e}")
-            return None
+    # Extract events from Canvas API response
+    if 'canvas_events' in st.session_state:
+        for event in st.session_state['canvas_events']:
+            tasks.append({
+                "title": event.name,
+                "start": event.begin.isoformat(),
+                "end": event.end.isoformat(),
+                "color": "red"  # Canvas events are red
+            })
 
-    # Parse the uploaded file or the URL
-    if uploaded_file is not None or ics_url:
-        if uploaded_file is not None:
-            calendar_data = uploaded_file.read().decode("utf-8")
-        else:
-            calendar_data = fetch_ics_from_url(ics_url)
+    if tasks:
+        task_events_js = str(tasks).replace("'", '"')
 
-        if calendar_data:
-            cal = Calendar(calendar_data)
+        # FullCalendar HTML/JS
+        fullcalendar_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.css' rel='stylesheet' />
+            <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.js'></script>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    background-color: #f0f2f6;
+                    color: #333;
+                }}
+                #calendar {{
+                    max-width: 900px;
+                    margin: 40px auto;
+                    padding: 0 10px;
+                    background-color: white;
+                    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+                    border-radius: 8px;
+                }}
+            </style>
+            <script>
+            document.addEventListener('DOMContentLoaded', function() {{
+                var calendarEl = document.getElementById('calendar');
 
-            st.write("### Calendar Events:")
-
-            for event in cal.events:
-                task_name = event.name
-                task_start = event.begin.datetime
-                task_end = event.end.datetime
-                task_description = event.description if event.description else "No description available"
-                task_duration = (task_end - task_start).total_seconds() / 3600  # Duration in hours
-
-                # Logic to determine the event source based on event name or description
-                if "Canvas" in task_name:
-                    event_source = "Canvas"
-                    color = "red"
-                elif "Outlook" in task_name:
-                    event_source = "Outlook"
-                    color = "blue"
-                elif "Google" in task_name:
-                    event_source = "Google"
-                    color = "yellow"
-                else:
-                    event_source = "Other"
-                    color = "green"  # Default color for other events
-
-                tasks.append({
-                    "title": task_name,
-                    "start": task_start.isoformat(),
-                    "end": task_end.isoformat(),
-                    "description": task_description,
-                    "duration": task_duration,
-                    "color": color
-                })
-
-    # View option: List View or Calendar View
-    view_option = st.radio("Choose a view", ('List View', 'Calendar View'))
-
-    # List View
-    if view_option == 'List View':
-        st.write("### Detailed Task List")
-        if tasks:
-            for task in tasks:
-                st.write(f"**Task:** {task['title']}")
-                st.write(f"**Start:** {task['start']}")
-                st.write(f"**End:** {task['end']}")
-                st.write(f"**Duration:** {task['duration']:.2f} hours")
-                st.write(f"**Description:** {task['description']}")
-                st.write(f"**Event Source Color:** {task['color']}")
-                st.write("---")
-        else:
-            st.write("No tasks available to display.")
-
-    # Calendar View
-    elif view_option == 'Calendar View':
-        if tasks:
-            task_events_js = str(tasks).replace("'", '"')
-
-            fullcalendar_html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.css' rel='stylesheet' />
-                <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.0/main.min.js'></script>
-                <style>
-                    body {{
-                        font-family: Arial, sans-serif;
-                        background-color: #f0f2f6;
-                        color: #333;
-                    }}
-                    #calendar {{
-                        max-width: 900px;
-                        margin: 40px auto;
-                        padding: 0 10px;
-                        background-color: white;
-                        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-                        border-radius: 8px;
-                    }}
-                </style>
-                <script>
-                document.addEventListener('DOMContentLoaded', function() {{
-                    var calendarEl = document.getElementById('calendar');
-
-                    var calendar = new FullCalendar.Calendar(calendarEl, {{
-                    initialView: 'dayGridMonth',
-                    headerToolbar: {{
-                        left: 'prev,next today',
-                        center: 'title',
-                        right: 'dayGridMonth,timeGridWeek,timeGridDay'
-                    }},
-                    events: {task_events_js},
-                    eventDisplay: 'block',
-                    editable: true,
-                    eventResizableFromStart: true,
-                    displayEventTime: true,
-                    eventTimeFormat: {{
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        hour12: false
-                    }},
-                    slotMinTime: '00:00:00',
-                    slotMaxTime: '24:00:00'
-                    }});
-
-                    calendar.render();
+                var calendar = new FullCalendar.Calendar(calendarEl, {{
+                initialView: 'dayGridMonth',
+                headerToolbar: {{
+                    left: 'prev,next today',
+                    center: 'title',
+                    right: 'dayGridMonth,timeGridWeek,timeGridDay'
+                }},
+                events: {task_events_js},
+                eventDisplay: 'block',
+                editable: true,
+                eventResizableFromStart: true,
+                displayEventTime: true,
+                eventTimeFormat: {{
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false
+                }},
+                slotMinTime: '00:00:00',
+                slotMaxTime: '24:00:00'
                 }});
-                </script>
-            </head>
-            <body>
-            <div id='calendar'></div>
-            </body>
-            </html>
-            """
 
-            st.components.v1.html(fullcalendar_html, height=600)
+                calendar.render();
+            }});
+            </script>
+        </head>
+        <body>
+        <div id='calendar'></div>
+        </body>
+        </html>
+        """
 
-        else:
-            st.write("No events to display. Please upload a file or provide a URL.")
+        st.components.v1.html(fullcalendar_html, height=600)
 
 # Logic to switch between login, register, and main content
 if not st.session_state['logged_in']:
     if st.session_state['is_registering']:
-        show_register_page()  # Show the registration page
+        show_register_page()
     else:
-        show_login_page()  # Show the login page
+        show_login_page()
 else:
-    show_main_content()  # Show the main content after login
+    show_main_content()
