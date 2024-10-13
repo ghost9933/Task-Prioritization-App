@@ -5,44 +5,26 @@
     <title>Task Prioritization App</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        .overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.7);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            z-index: 10;
-        }
-        .overlay button {
-            padding: 10px 20px;
-            margin-top: 20px;
+        img {
+            max-width: 80%;
             cursor: pointer;
-            font-size: 16px;
+            display: block;
+            margin: 20px auto;
+        }
+        body {
+            text-align: center;
+            font-family: Arial, sans-serif;
+        }
+        a {
+            text-decoration: none;
         }
     </style>
 </head>
 <body>
-    <div class="overlay" id="overlay">
-        <div>
-            <h2>Access the Task Prioritization App</h2>
-            <p>The Task Prioritization App will open in a new tab.</p>
-            <a href="https://prioritizemeai.streamlit.app/?embed_options=show_toolbar,show_padding,dark_theme,show_footer,light_theme,show_colored_line" target="_blank">
-                <button>Open App</button>
-            </a>
-        </div>
-    </div>
-
-    <script>
-        // Optionally remove overlay after clicking
-        document.querySelector('.overlay button').addEventListener('click', function() {
-            document.getElementById('overlay').style.display = 'none';
-        });
-    </script>
+    <h1>Task Prioritization App</h1>
+    <p>Click the image below to access the Task Prioritization App:</p>
+    <a href="https://prioritizemeai.streamlit.app/?embed_options=show_toolbar,show_padding,dark_theme,show_footer,light_theme,show_colored_line" target="_blank">
+        <img src="preview-image.png" alt="Task Prioritization App Preview">
+    </a>
 </body>
 </html>
